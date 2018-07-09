@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width">
+    <title>JSON - CLI converter</title>
+    <style>
+        .column {
+            width: 48%;
+            position: absolute;
+            top: 2%;
+            bottom: 2%;
+            font-size: 16px;
+        }
+
+        .left {
+            left: 1%;
+        }
+
+        .right {
+            right: 1%;
+        }
+
+        .error {
+            background-color: pink;
+        }
+    </style>
+
+    <script>
+        function to_json_form() {
+            var cli_area = document.getElementById("cli_area");
+            var json_area = document.getElementById("json_area");
+
+            if (!cli_area.value) {
+                cli_area.classList.remove("error");
+                return;
+            }
+
+            try {
+                json_area.value = JSON.stringify(cli_to_json(cli_area.value), null, "    ");
+
+                json_area.classList.remove("error");
+                cli_area.classList.remove("error");
+            } catch (e) {
+                // console.dir(e);
+                cli_area.classList.add("error");
+            }
+        }
+
+        function to_cli_form() {
+            var cli_area = document.getElementById("cli_area");
+            var json_area = document.getElementById("json_area");
+
+            if (!json_area.value) {
+                json_area.classList.remove("error");
+                return;
+            }
+
+            try {
+                var text = json_area.value;
+                var json = JSON.parse(json_area.value);
+                cli_area.value = json_to_cli(json);
+                cli_area.classList.remove("error");
+                json_area.classList.remove("error");
+            } catch (e) {
+                // console.dir(e);
+                json_area.classList.add("error");
+            }
+        }
+
+        function parse_key_part(key) {
+            var parsedKey = Number(key);
+            return isNaN(parsedKey) ? key : parsedKey;
+        }
+
+        function parse_value(value) {
+            try {
+                var value2 = JSON.parse(value);
+
+                try {
+                    return JSON.parse(value2);
+                } catch (e) {
+                    return value2;
+                }
+            } catch (e) {
+                return value;
+            }
+        }
+
+        function cli_to_json(cli) {
+            var parts = [];
+            var currentPart = "";
+            var cliSymbols = cli.split("");
+            var NORMAL = 0, IN_QUOTE = 1, IN_DOUBLE_QUOTE = 2;
+            var state = NORMAL;
+            var lastTokenHasBeenQuoted = false;
+
+            var prevSymbol, symbol;
+            while (cliSymbols.length > 0) {
+                prevSymbol = symbol;
+                symbol = cliSymbols.shift();
+                switch (state) {
+                    case IN_QUOTE:
+                        if ("'" === symbol) {
+                            lastTokenHasBeenQuoted = true;
+                            state = NORMAL;
+                        }
+
+                        currentPart += symbol;
+                        break;
+                    case IN_DOUBLE_QUOTE:
+                        if ("\"" === symbol && "\\" !== prevSymbol) {
+                            lastTokenHasBeenQuoted = true;
+                            state = NORMAL;
+                        }
+
+                        currentPart += symbol;
+                        break;
+                    default:
+                        if ("'" === symbol) {
+                            state = IN_QUOTE;
+                            currentPart += symbol;
+                        } else if ("\"" === symbol) {
+                            state = IN_DOUBLE_QUOTE;
+                            currentPart += symbol;
+                        } else if (" " === symbol) {
+                            if (lastTokenHasBeenQuoted || currentPart.length > 0) {
+                                parts.push(currentPart);
+                                currentPart = "";
+                            }
+                        } else {
+                            currentPart += symbol;
+                        }
+
+                        lastTokenHasBeenQuoted = false;
+                        break;
+                }
+            }
+
+            if (lastTokenHasBeenQuoted || currentPart.length > 0) {
+                parts.push(currentPart);
+            }
+
+            if (state === IN_QUOTE || state === IN_DOUBLE_QUOTE) {
+                throw Error("Command line has bad syntax");
+            }
+
+            if (parts.length % 2 !== 0) {
+                throw Error("Number of cli parameters must be even");
+            }
+
+            var root = {};
+            var arraysToNormalize = [];
+
+            while (parts.length) {
+                var key = parts.shift();
+                var value = parse_value(parts.shift());
+
+                var savedKeyPart = null, sink = null;
+                key.split(".").forEach(function (part) {
+                    if (!part) {
+                        throw Error("Bad key [" + key + "]")
+                    }
+
+                    var keyPart = parse_key_part(part);
+                    var keyPartIsANumber = Object.prototype.toString.call(keyPart) === "[object Number]";
+
+                    if (!sink) {
+                        sink = root;
+                        savedKeyPart = keyPart;
+                        return;
+                    }
+
+                    if (!sink[savedKeyPart]) {
+                        if (keyPartIsANumber) {
+                            sink[savedKeyPart] = [];
+                            arraysToNormalize.push({
+                                "node": sink,
+                                "key": savedKeyPart
+                            });
+                        } else {
+                            sink[savedKeyPart] = {};
+                        }
+                    }
+
+                    sink = sink[savedKeyPart];
+                    savedKeyPart = keyPart;
+                });
+
+                if (sink[savedKeyPart]) {
+                    throw Error("Duplicated key [" + key + "]");
+                }
+
+                sink[savedKeyPart] = value;
+            }
+
+            arraysToNormalize.forEach(function (o) {
+                o.node[o.key] = o.node[o.key].filter(function (item) {
+                    return item !== null;
+                })
+            });
+
+            return root;
+        }
+
+        function json_to_cli(json) {
+            var cli = "";
+
+            function step(json, stepKey) {
+                stepKey = stepKey || "";
+                var type = Object.prototype.toString.call(json);
+
+                switch (type) {
+                    case "[object Object]":
+                        Object.keys(json).forEach(function (key) {
+                            step(json[key], stepKey ? stepKey + '.' + key : key)
+                        });
+                        break;
+                    case "[object Array]":
+                        for (var i = 0; i < json.length; i++) {
+                            step(json[i], stepKey ? stepKey + '.' + i : i);
+                        }
+                        break;
+                    case "[object String]":
+                    case "[object Date]":
+                    case "[object Number]":
+                    case "[object Boolean]":
+                        cli = cli + stepKey + " " + JSON.stringify(json) + " ";
+                        break;
+                    default:
+                }
+            }
+
+            step(json);
+
+            return cli.trim();
+        }
+
+    </script>
+</head>
+<body>
+
+<div id="status"></div>
+<textarea class="column left" id="cli_area" onkeyup="to_json_form()" onblur="to_json_form()" placeholder="from 1 to 16"
+          spellcheck="false"></textarea>
+<textarea class="column right" id="json_area" onkeyup="to_cli_form()" onblur="to_cli_form()"
+          placeholder="{&#10;  &quot;from&quot; : 1,&#10;  &quot;to&quot; : 16&#10;}" spellcheck="false"></textarea>
+
+</body>
+</html>
